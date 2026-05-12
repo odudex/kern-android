@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
 }
 
+// Comma-separated ABI override for fast local builds. Unset -> full release
+// matrix (arm64-v8a, x86_64). Examples:
+//   ./gradlew :app:assembleDebug -Pkern.abi=arm64-v8a
+//   echo 'kern.abi=arm64-v8a' >> ~/.gradle/gradle.properties
+val kernAbis: List<String> = (findProperty("kern.abi") as String?)
+    ?.split(",")
+    ?.map(String::trim)
+    ?.filter(String::isNotEmpty)
+    ?.takeIf { it.isNotEmpty() }
+    ?: listOf("arm64-v8a", "x86_64")
+
 android {
     namespace = "com.odudex.kern"
     ndkVersion = "30.0.14904198"
@@ -20,7 +31,7 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += kernAbis
         }
 
         externalNativeBuild {

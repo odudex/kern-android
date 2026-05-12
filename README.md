@@ -26,6 +26,28 @@ The debug APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
+### Build a single ABI for faster local iteration
+
+The default build produces both `arm64-v8a` (real phones) and `x86_64`
+(emulator). Pass `-Pkern.abi` to limit the native build to one ABI —
+roughly halves clean-build time and skips the unused-architecture
+recompiles during inner-loop work:
+
+```bash
+./gradlew :app:assembleDebug -Pkern.abi=arm64-v8a   # phone only
+./gradlew :app:assembleDebug -Pkern.abi=x86_64      # emulator only
+```
+
+Multiple ABIs can be comma-separated (`-Pkern.abi=arm64-v8a,x86_64`).
+For a persistent per-machine default, add the property to your user
+Gradle config — this keeps the repo's defaults untouched:
+
+```bash
+echo 'kern.abi=arm64-v8a' >> ~/.gradle/gradle.properties
+```
+
+Unset the property (or remove the line) to restore the full release matrix.
+
 ## Run On Emulator
 
 ```bash
