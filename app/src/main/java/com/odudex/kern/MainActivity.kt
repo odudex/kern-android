@@ -1,6 +1,7 @@
 package com.odudex.kern
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.MotionEvent
@@ -13,33 +14,38 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 
 class MainActivity : Activity() {
-    private lateinit var kernView: KernSurfaceView
+    private var kernView: KernSurfaceView? = null
+    private var warningAccepted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         hideSystemUi()
-        kernView = KernSurfaceView(this)
-        setContentView(kernView)
-        CameraManager.attach(this)
+        showWarningDialog()
     }
 
     override fun onResume() {
         super.onResume()
         hideSystemUi()
-        KernNative.resume()
-        CameraManager.onActivityResume()
+        if (warningAccepted) {
+            KernNative.resume()
+            CameraManager.onActivityResume()
+        }
     }
 
     override fun onPause() {
-        CameraManager.onActivityPause()
-        KernNative.pause()
+        if (warningAccepted) {
+            CameraManager.onActivityPause()
+            KernNative.pause()
+        }
         super.onPause()
     }
 
     override fun onDestroy() {
-        CameraManager.detach()
-        kernView.shutdown()
+        if (warningAccepted) {
+            CameraManager.detach()
+            kernView?.shutdown()
+        }
         super.onDestroy()
     }
 
@@ -55,6 +61,26 @@ class MainActivity : Activity() {
             return
         }
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+    }
+
+    private fun showWarningDialog() {
+        AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+            .setTitle(R.string.warning_title)
+            .setMessage(R.string.warning_message)
+            .setPositiveButton(R.string.warning_acknowledge) { _, _ -> startKernApp() }
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun startKernApp() {
+        warningAccepted = true
+        hideSystemUi()
+        val view = KernSurfaceView(this)
+        kernView = view
+        setContentView(view)
+        CameraManager.attach(this)
+        KernNative.resume()
+        CameraManager.onActivityResume()
     }
 
     private fun hideSystemUi() {
