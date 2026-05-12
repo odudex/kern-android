@@ -102,3 +102,8 @@ adb shell am start -n com.odudex.kern/.MainActivity
   `<kern>` is read at configure time from `third_party/Kern/version.txt`.
 - Kern and LVGL sources are not modified; Android-specific glue lives under `app/src/main/cpp`.
 - Android simulates the `wave_5` board at its LVGL logical resolution (`720x1280`) and scales that frame into the phone/emulator `SurfaceView` as large as possible without changing the aspect ratio.
+
+## License
+
+MIT — see [LICENSE](LICENSE). Bundled dependencies keep their own licenses:
+Kern (MIT), LVGL (MIT), mbedtls (Apache-2.0).
