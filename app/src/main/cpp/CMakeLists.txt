@@ -188,9 +188,28 @@ target_compile_options(kern_common INTERFACE
 # ---------------------------------------------------------------------------
 # kern_sim_stubs: ESP-IDF / BSP / SD-card / video simulator shims.
 # These implement APIs that real Kern firmware would get from ESP-IDF.
+#
+# stubs.c hard-codes esp_app_get_description()->version as "sim-dev". Prefix
+# it with the Kern submodule's version (from third_party/Kern/version.txt)
+# so the About page shows e.g. "0.0.6-sim-dev". Patch is done at configure
+# time into a build-dir copy so the submodule stays clean.
 # ---------------------------------------------------------------------------
+file(READ ${KERN_DIR}/version.txt KERN_VERSION)
+string(STRIP "${KERN_VERSION}" KERN_VERSION)
+set(KERN_STUBS_SRC ${KERN_DIR}/simulator/platform/esp_idf_stubs/stubs.c)
+set(KERN_STUBS_PATCHED ${CMAKE_CURRENT_BINARY_DIR}/generated/stubs.c)
+file(READ ${KERN_STUBS_SRC} _stubs_contents)
+string(REPLACE
+    ".version      = \"sim-dev\""
+    ".version      = \"${KERN_VERSION}-sim-dev\""
+    _stubs_contents "${_stubs_contents}")
+file(WRITE ${KERN_STUBS_PATCHED} "${_stubs_contents}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${KERN_DIR}/version.txt
+    ${KERN_STUBS_SRC})
+
 set(KERN_SIM_SOURCES
-    ${KERN_DIR}/simulator/platform/esp_idf_stubs/stubs.c
+    ${KERN_STUBS_PATCHED}
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/nvs_sim.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/efuse_hmac_sim.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/storage_stub.c
