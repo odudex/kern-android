@@ -14,6 +14,22 @@ Android simulator shell for the Kern LVGL UI.
 - Additional native crypto dependency:
   - `third_party/mbedtls` pinned to `mbedtls-3.6.2`
 
+## Prerequisites
+
+- Android SDK with **NDK `30.0.14904198`** and **CMake `4.1.2`** installed via
+  `sdkmanager` (or Android Studio's SDK Manager). Both versions are pinned in
+  `app/build.gradle.kts`.
+- The build needs to know where the SDK lives. Either:
+  - export `ANDROID_HOME` (or `ANDROID_SDK_ROOT`) to point at the SDK, **or**
+  - create a `local.properties` at the repo root with:
+    ```properties
+    sdk.dir=/absolute/path/to/Android/sdk
+    ```
+    Only add `cmake.dir=...` if your CMake 4.1.2 lives outside the standard
+    `$ANDROID_SDK_ROOT/cmake/4.1.2/`.
+
+`local.properties` is per-machine — it's gitignored and must not be committed.
+
 ## Build
 
 ```bash
