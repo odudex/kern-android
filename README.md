@@ -2,6 +2,11 @@
 
 Android simulator shell for the Kern LVGL UI.
 
+> **For learning only.** This app exists to explore Kern and air-gapped
+> Bitcoin transactions. Phones can't fully isolate keys from the OS,
+> libraries, or peripherals — do not use it for wallets holding real
+> funds or important mnemonics. Use a dedicated device for that.
+
 ## What is included
 
 - Kotlin `SurfaceView` Android app at package `com.odudex.kern`
@@ -87,6 +92,13 @@ adb shell am start -n com.odudex.kern/.MainActivity
 
 ## Notes
 
-- First milestone is UI simulation only. Camera/QR device integration is still mocked through Kern's simulator shims.
+- The QR scanner and entropy capture flows run against the phone's real
+  rear camera via Camera2; the simulator's mock camera shims are only
+  used as a fallback when no camera is available (e.g. emulator without
+  a virtual webcam).
+- An educational-use warning dialog is shown on every launch; the app
+  surface is only initialised once the user acknowledges it.
+- The About page shows a version of the form `<kern>-sim-dev`, where
+  `<kern>` is read at configure time from `third_party/Kern/version.txt`.
 - Kern and LVGL sources are not modified; Android-specific glue lives under `app/src/main/cpp`.
 - Android simulates the `wave_5` board at its LVGL logical resolution (`720x1280`) and scales that frame into the phone/emulator `SurfaceView` as large as possible without changing the aspect ratio.
