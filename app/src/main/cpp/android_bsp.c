@@ -1,6 +1,8 @@
 #include "android_lvgl_display.h"
 
-#include "bsp/esp32_p4_wifi6_touch_lcd_4b.h"
+#include "bsp/config.h"
+#include "bsp/display.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
 

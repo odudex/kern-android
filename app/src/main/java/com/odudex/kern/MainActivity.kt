@@ -57,6 +57,10 @@ class MainActivity : Activity() {
 }
 
 private class KernSurfaceView(context: Activity) : SurfaceView(context), SurfaceHolder.Callback {
+    private companion object {
+        const val BoardProfile = "wave_5"
+    }
+
     private val filesPath = context.filesDir.absolutePath
     private var created = false
 
@@ -100,7 +104,7 @@ private class KernSurfaceView(context: Activity) : SurfaceView(context), Surface
     private fun startOrResize(surface: Surface, width: Int, height: Int) {
         if (width <= 0 || height <= 0) return
         if (!created) {
-            KernNative.create(surface, width, height, filesPath, "wave_4b")
+            KernNative.create(surface, width, height, filesPath, BoardProfile)
             created = true
         } else {
             KernNative.resize(surface, width, height)

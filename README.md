@@ -39,4 +39,4 @@ adb shell am start -n com.odudex.kern/.MainActivity
 
 - First milestone is UI simulation only. Camera/QR device integration is still mocked through Kern's simulator shims.
 - Kern and LVGL sources are not modified; Android-specific glue lives under `app/src/main/cpp`.
-- Android uses the phone/emulator `SurfaceView` size as the LVGL logical resolution. The `wave_4b` constants remain the fallback BSP/profile values for compatibility shims, not a forced 720x720 viewport.
+- Android simulates the `wave_5` board at its LVGL logical resolution (`720x1280`) and scales that frame into the phone/emulator `SurfaceView` as large as possible without changing the aspect ratio.

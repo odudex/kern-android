@@ -27,9 +27,9 @@ android {
             cmake {
                 arguments += listOf(
                     "-DANDROID_STL=c++_shared",
-                    "-DSIM_BOARD=wave_4b",
+                    "-DSIM_BOARD=wave_5",
                     "-DSIM_LCD_H_RES=720",
-                    "-DSIM_LCD_V_RES=720"
+                    "-DSIM_LCD_V_RES=1280"
                 )
                 cppFlags += listOf("-std=c++17")
             }

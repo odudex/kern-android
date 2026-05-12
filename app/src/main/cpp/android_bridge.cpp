@@ -118,7 +118,7 @@ bool start_kern(ANativeWindow *window, int width, int height,
                         "Starting board profile %s on Android surface %dx%d",
                         board ? board : "default", width, height);
     if (!kern_android_display_create(SIM_LCD_H_RES, SIM_LCD_V_RES,
-                                     KERN_ANDROID_LAYOUT_SURFACE, window, &display, &indev)) {
+                                     KERN_ANDROID_LAYOUT_BOARD, window, &display, &indev)) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "LVGL Android display init failed");
         return false;
     }
@@ -191,7 +191,7 @@ Java_com_odudex_kern_KernNative_create(JNIEnv *env, jobject, jobject surface,
     std::string files_storage;
     std::string board_storage;
     const char *files = jstring_or_default(env, files_dir, nullptr, files_storage);
-    const char *board_name = jstring_or_default(env, board, "wave_4b", board_storage);
+    const char *board_name = jstring_or_default(env, board, "wave_5", board_storage);
 
     g_created = start_kern(window, width, height, files, board_name);
     if (!g_created) {
