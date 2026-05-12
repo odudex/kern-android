@@ -65,8 +65,11 @@ void lvgl_port_flush_ready(lv_display_t *disp) {
 void kern_lv_refr_now_real(lv_display_t *disp);
 
 void lv_refr_now(lv_display_t *disp) {
+    /* The flush callback in android_lvgl_display.cpp already calls
+     * present_locked() on the last partial flush of a refr cycle, so we
+     * don't repeat it here — doing so was double-presenting and hammering
+     * ANativeWindow_lock on every Kern lv_refr_now() call. */
     kern_lv_refr_now_real(disp);
-    kern_android_display_present();
 }
 
 lv_display_t *bsp_display_start(void) {

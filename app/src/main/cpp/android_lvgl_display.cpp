@@ -127,6 +127,46 @@ void apply_size_locked() {
     recompute_view_locked();
 }
 
+void put_rgba(uint8_t *dst, uint32_t xrgb) {
+    dst[0] = static_cast<uint8_t>((xrgb >> 16) & 0xff);
+    dst[1] = static_cast<uint8_t>((xrgb >> 8) & 0xff);
+    dst[2] = static_cast<uint8_t>(xrgb & 0xff);
+    dst[3] = 0xff;
+}
+
+// Caller must hold g_display_mutex. Blits g_framebuffer into the current
+// ANativeWindow and posts it. Reads all shared display state while the
+// caller's lock is held; flush_cb invokes this directly.
+void present_locked() {
+    if (!g_window || g_framebuffer.empty()) return;
+
+    ANativeWindow_Buffer buffer {};
+    if (ANativeWindow_lock(g_window, &buffer, nullptr) != 0) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ANativeWindow_lock failed");
+        return;
+    }
+
+    auto *base = static_cast<uint8_t *>(buffer.bits);
+    const int32_t stride_bytes = buffer.stride * 4;
+
+    for (int32_t y = 0; y < buffer.height; ++y) {
+        std::memset(base + y * stride_bytes, 0, static_cast<size_t>(stride_bytes));
+    }
+
+    if (g_view_w > 0 && g_view_h > 0) {
+        for (int32_t dy = 0; dy < g_view_h; ++dy) {
+            const int32_t sy = std::min(g_logical_h - 1, static_cast<int32_t>(dy / g_scale));
+            uint8_t *row = base + (g_view_y + dy) * stride_bytes + g_view_x * 4;
+            for (int32_t dx = 0; dx < g_view_w; ++dx) {
+                const int32_t sx = std::min(g_logical_w - 1, static_cast<int32_t>(dx / g_scale));
+                put_rgba(row + dx * 4, g_framebuffer[static_cast<size_t>(sy) * g_logical_w + sx]);
+            }
+        }
+    }
+
+    ANativeWindow_unlockAndPost(g_window);
+}
+
 void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_map) {
     std::lock_guard<std::mutex> guard(g_display_mutex);
     if (g_framebuffer.empty()) {
@@ -151,7 +191,7 @@ void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_map) {
     }
 
     if (lv_display_flush_is_last(display)) {
-        kern_android_display_present();
+        present_locked();
     }
     lv_display_flush_ready(display);
 }
@@ -161,13 +201,6 @@ void touch_read_cb(lv_indev_t *, lv_indev_data_t *data) {
     data->point.x = g_touch_x;
     data->point.y = g_touch_y;
     data->state = g_touch_down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-}
-
-void put_rgba(uint8_t *dst, uint32_t xrgb) {
-    dst[0] = static_cast<uint8_t>((xrgb >> 16) & 0xff);
-    dst[1] = static_cast<uint8_t>((xrgb >> 8) & 0xff);
-    dst[2] = static_cast<uint8_t>(xrgb & 0xff);
-    dst[3] = 0xff;
 }
 
 } // namespace
@@ -235,33 +268,8 @@ void kern_android_display_set_touch(int action, float surface_x, float surface_y
 }
 
 void kern_android_display_present(void) {
-    if (!g_window || g_framebuffer.empty()) return;
-
-    ANativeWindow_Buffer buffer {};
-    if (ANativeWindow_lock(g_window, &buffer, nullptr) != 0) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG, "ANativeWindow_lock failed");
-        return;
-    }
-
-    auto *base = static_cast<uint8_t *>(buffer.bits);
-    const int32_t stride_bytes = buffer.stride * 4;
-
-    for (int32_t y = 0; y < buffer.height; ++y) {
-        std::memset(base + y * stride_bytes, 0, static_cast<size_t>(stride_bytes));
-    }
-
-    if (g_view_w > 0 && g_view_h > 0) {
-        for (int32_t dy = 0; dy < g_view_h; ++dy) {
-            const int32_t sy = std::min(g_logical_h - 1, static_cast<int32_t>(dy / g_scale));
-            uint8_t *row = base + (g_view_y + dy) * stride_bytes + g_view_x * 4;
-            for (int32_t dx = 0; dx < g_view_w; ++dx) {
-                const int32_t sx = std::min(g_logical_w - 1, static_cast<int32_t>(dx / g_scale));
-                put_rgba(row + dx * 4, g_framebuffer[static_cast<size_t>(sy) * g_logical_w + sx]);
-            }
-        }
-    }
-
-    ANativeWindow_unlockAndPost(g_window);
+    std::lock_guard<std::mutex> guard(g_display_mutex);
+    present_locked();
 }
 
 void kern_android_display_destroy(void) {
