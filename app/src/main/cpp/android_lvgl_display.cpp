@@ -35,8 +35,9 @@ float g_scale = 1.0f;
 bool g_touch_down = false;
 int32_t g_touch_x = 0;
 int32_t g_touch_y = 0;
+// LVGL renders dirty regions directly into g_framebuffer (DIRECT mode) and
+// present_locked() copies it into the current ANativeWindow buffer.
 std::vector<uint32_t> g_framebuffer;
-std::vector<uint32_t> g_drawbuffer;
 
 uint32_t now_ms() {
     timespec ts {};
@@ -49,13 +50,8 @@ size_t pixel_count(int32_t width, int32_t height) {
     return static_cast<size_t>(width) * static_cast<size_t>(height);
 }
 
-size_t drawbuffer_pixel_count(int32_t width, int32_t height) {
-    return std::max<size_t>(1, pixel_count(width, height) / 5);
-}
-
 void allocate_buffers_locked() {
     g_framebuffer.assign(pixel_count(g_logical_w, g_logical_h), 0x00000000);
-    g_drawbuffer.assign(drawbuffer_pixel_count(g_logical_w, g_logical_h), 0x00000000);
 }
 
 void choose_logical_size_locked() {
@@ -117,9 +113,9 @@ void apply_size_locked() {
         allocate_buffers_locked();
         if (g_display) {
             lv_display_set_resolution(g_display, g_logical_w, g_logical_h);
-            lv_display_set_buffers(g_display, g_drawbuffer.data(), nullptr,
-                                   static_cast<uint32_t>(g_drawbuffer.size() * sizeof(uint32_t)),
-                                   LV_DISPLAY_RENDER_MODE_PARTIAL);
+            lv_display_set_buffers(g_display, g_framebuffer.data(), nullptr,
+                                   static_cast<uint32_t>(g_framebuffer.size() * sizeof(uint32_t)),
+                                   LV_DISPLAY_RENDER_MODE_DIRECT);
             lv_obj_invalidate(lv_screen_active());
         }
     }
@@ -127,11 +123,15 @@ void apply_size_locked() {
     recompute_view_locked();
 }
 
-void put_rgba(uint8_t *dst, uint32_t xrgb) {
-    dst[0] = static_cast<uint8_t>((xrgb >> 16) & 0xff);
-    dst[1] = static_cast<uint8_t>((xrgb >> 8) & 0xff);
-    dst[2] = static_cast<uint8_t>(xrgb & 0xff);
-    dst[3] = 0xff;
+// LVGL XRGB8888 in memory (LE uint32): [B, G, R, X=ff].
+// ANativeWindow RGBA8888 in memory:    [R, G, B, A=ff].
+// Swap byte 0 <-> byte 2 and force the alpha byte. Compilers turn this into
+// a rev/bswap + one 32-bit store, replacing four byte stores.
+inline uint32_t xrgb_to_rgba(uint32_t xrgb) {
+    return ((xrgb & 0x00ff0000u) >> 16)
+         | (xrgb & 0x0000ff00u)
+         | ((xrgb & 0x000000ffu) << 16)
+         | 0xff000000u;
 }
 
 // Caller must hold g_display_mutex. Blits g_framebuffer into the current
@@ -154,12 +154,15 @@ void present_locked() {
     }
 
     if (g_view_w > 0 && g_view_h > 0) {
+        const float inv_scale = 1.0f / g_scale;
         for (int32_t dy = 0; dy < g_view_h; ++dy) {
-            const int32_t sy = std::min(g_logical_h - 1, static_cast<int32_t>(dy / g_scale));
-            uint8_t *row = base + (g_view_y + dy) * stride_bytes + g_view_x * 4;
+            const int32_t sy = std::min(g_logical_h - 1, static_cast<int32_t>(dy * inv_scale));
+            const uint32_t *src_row = &g_framebuffer[static_cast<size_t>(sy) * g_logical_w];
+            auto *row = reinterpret_cast<uint32_t *>(
+                base + (g_view_y + dy) * stride_bytes + g_view_x * 4);
             for (int32_t dx = 0; dx < g_view_w; ++dx) {
-                const int32_t sx = std::min(g_logical_w - 1, static_cast<int32_t>(dx / g_scale));
-                put_rgba(row + dx * 4, g_framebuffer[static_cast<size_t>(sy) * g_logical_w + sx]);
+                const int32_t sx = std::min(g_logical_w - 1, static_cast<int32_t>(dx * inv_scale));
+                row[dx] = xrgb_to_rgba(src_row[sx]);
             }
         }
     }
@@ -167,30 +170,12 @@ void present_locked() {
     ANativeWindow_unlockAndPost(g_window);
 }
 
-void flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t *px_map) {
+void flush_cb(lv_display_t *display, const lv_area_t * /*area*/, uint8_t * /*px_map*/) {
+    // DIRECT mode: LVGL has already rendered dirty regions into g_framebuffer
+    // (which is the buffer it owns). We only need to present once per refresh
+    // cycle, on the final partial flush.
     std::lock_guard<std::mutex> guard(g_display_mutex);
-    if (g_framebuffer.empty()) {
-        lv_display_flush_ready(display);
-        return;
-    }
-
-    const int32_t x1 = std::max<int32_t>(0, area->x1);
-    const int32_t y1 = std::max<int32_t>(0, area->y1);
-    const int32_t x2 = std::min<int32_t>(g_logical_w - 1, area->x2);
-    const int32_t y2 = std::min<int32_t>(g_logical_h - 1, area->y2);
-    const uint32_t *src = reinterpret_cast<const uint32_t *>(px_map);
-    const int32_t src_w = area->x2 - area->x1 + 1;
-
-    for (int32_t y = y1; y <= y2; ++y) {
-        const int32_t src_y = y - area->y1;
-        for (int32_t x = x1; x <= x2; ++x) {
-            const int32_t src_x = x - area->x1;
-            g_framebuffer[static_cast<size_t>(y) * g_logical_w + x] =
-                src[static_cast<size_t>(src_y) * src_w + src_x];
-        }
-    }
-
-    if (lv_display_flush_is_last(display)) {
+    if (!g_framebuffer.empty() && lv_display_flush_is_last(display)) {
         present_locked();
     }
     lv_display_flush_ready(display);
@@ -226,9 +211,9 @@ bool kern_android_display_create(int32_t fallback_width, int32_t fallback_height
     g_display = display;
     lv_display_set_color_format(display, LV_COLOR_FORMAT_XRGB8888);
     lv_display_set_flush_cb(display, flush_cb);
-    lv_display_set_buffers(display, g_drawbuffer.data(), nullptr,
-                           static_cast<uint32_t>(g_drawbuffer.size() * sizeof(uint32_t)),
-                           LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(display, g_framebuffer.data(), nullptr,
+                           static_cast<uint32_t>(g_framebuffer.size() * sizeof(uint32_t)),
+                           LV_DISPLAY_RENDER_MODE_DIRECT);
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
@@ -280,5 +265,4 @@ void kern_android_display_destroy(void) {
     }
     g_display = nullptr;
     g_framebuffer.clear();
-    g_drawbuffer.clear();
 }
