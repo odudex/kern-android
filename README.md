@@ -35,6 +35,18 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.odudex.kern/.MainActivity
 ```
 
+## Install On USB Device
+
+Enable Developer options and USB debugging on the phone, connect it over USB,
+then accept the debugging prompt.
+
+```bash
+./gradlew :app:assembleDebug
+adb devices
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell am start -n com.odudex.kern/.MainActivity
+```
+
 ## Notes
 
 - First milestone is UI simulation only. Camera/QR device integration is still mocked through Kern's simulator shims.
