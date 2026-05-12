@@ -65,43 +65,38 @@ target_compile_definitions(lvgl PRIVATE
 )
 
 # ---------------------------------------------------------------------------
-# libwally-core + bundled secp256k1 (amalgamation, single TU)
+# secp256k1 (static). Split out of libwally-core's combined.c amalgamation
+# so it compiles as its own translation units and the wally TU can change
+# without recompiling secp256k1.
 #
-# TODO: split secp256k1 out of combined.c into its own static library so it
-# can be cached independently and unit-tested. Requires either a wrapper .c
-# that re-includes combined.c minus the three secp256k1 #includes, or an
-# upstream-aware split that compiles wally's individual .c files. Keeping
-# the amalgamation for now preserves wally's sha256/sha512/ripemd160 macro
-# renames that depend on single-TU compilation.
+# wally's amalgamation pulls secp256k1 in via three #includes that resolve
+# through the include search path; wally_secp_stubs/ shadows those paths
+# with empty files so the wally TU no longer contains secp256k1 code, and
+# the real secp256k1 symbols come from this target instead.
 # ---------------------------------------------------------------------------
-add_library(wally STATIC ${WALLY_DIR}/upstream/src/amalgamation/combined.c)
-target_include_directories(wally PUBLIC
-    ${WALLY_DIR}/upstream/include
+set(SECP256K1_DIR ${WALLY_DIR}/upstream/src/secp256k1)
+add_library(secp256k1 STATIC
+    ${SECP256K1_DIR}/src/secp256k1.c
+    ${SECP256K1_DIR}/src/precomputed_ecmult.c
+    ${SECP256K1_DIR}/src/precomputed_ecmult_gen.c
 )
-target_include_directories(wally PRIVATE
-    ${WALLY_DIR}
-    ${WALLY_DIR}/upstream
-    ${WALLY_DIR}/upstream/src
-    ${WALLY_DIR}/upstream/src/ccan
-    ${WALLY_DIR}/upstream/src/secp256k1
-    ${WALLY_DIR}/upstream/src/secp256k1/src
-    ${WALLY_DIR}/upstream/src/secp256k1/include
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/ecdh
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/ecdsa_adaptor
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/ecdsa_s2c
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/extrakeys
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/generator
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/musig
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/rangeproof
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/recovery
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/schnorrsig
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/surjection
-    ${WALLY_DIR}/upstream/src/secp256k1/src/modules/whitelist
-    ${MBEDTLS_DIR}/include
+target_include_directories(secp256k1 PUBLIC
+    ${SECP256K1_DIR}/include
 )
-target_compile_definitions(wally PRIVATE
-    BUILD_ELEMENTS=0
-    BUILD_MINIMAL=1
+target_include_directories(secp256k1 PRIVATE
+    ${SECP256K1_DIR}
+    ${SECP256K1_DIR}/src
+    ${SECP256K1_DIR}/src/modules/ecdh
+    ${SECP256K1_DIR}/src/modules/ecdsa_s2c
+    ${SECP256K1_DIR}/src/modules/extrakeys
+    ${SECP256K1_DIR}/src/modules/generator
+    ${SECP256K1_DIR}/src/modules/rangeproof
+    ${SECP256K1_DIR}/src/modules/recovery
+    ${SECP256K1_DIR}/src/modules/schnorrsig
+    ${SECP256K1_DIR}/src/modules/surjection
+    ${SECP256K1_DIR}/src/modules/whitelist
+)
+target_compile_definitions(secp256k1 PRIVATE
     ECMULT_WINDOW_SIZE=8
     ENABLE_MODULE_ECDH=1
     ENABLE_MODULE_ECDSA_S2C=1
@@ -115,8 +110,36 @@ target_compile_definitions(wally PRIVATE
     HAVE_BUILTIN_POPCOUNT=1
     NDEBUG=1
 )
+target_compile_options(secp256k1 PRIVATE -w -fstack-protector-strong)
+
+# ---------------------------------------------------------------------------
+# libwally-core (still compiled as the amalgamation single TU — the wally
+# TU needs single-unit compilation for sha256/sha512/ripemd160 macro
+# renames in ccan to avoid symbol collisions). secp256k1 has been hoisted
+# into its own target above and is now a link dependency.
+# ---------------------------------------------------------------------------
+add_library(wally STATIC ${WALLY_DIR}/upstream/src/amalgamation/combined.c)
+target_include_directories(wally PUBLIC
+    ${WALLY_DIR}/upstream/include
+)
+target_include_directories(wally PRIVATE
+    # MUST come first: shadows the three secp256k1 #includes in combined.c
+    # so this TU does not redundantly compile secp256k1 inline.
+    ${CMAKE_CURRENT_SOURCE_DIR}/wally_secp_stubs
+    ${WALLY_DIR}
+    ${WALLY_DIR}/upstream
+    ${WALLY_DIR}/upstream/src
+    ${WALLY_DIR}/upstream/src/ccan
+    ${MBEDTLS_DIR}/include
+)
+target_compile_definitions(wally PRIVATE
+    BUILD_ELEMENTS=0
+    BUILD_MINIMAL=1
+    HAVE_BUILTIN_POPCOUNT=1
+    NDEBUG=1
+)
 target_compile_options(wally PRIVATE -w -fstack-protector-strong)
-target_link_libraries(wally PUBLIC mbedcrypto)
+target_link_libraries(wally PUBLIC mbedcrypto secp256k1)
 
 # ---------------------------------------------------------------------------
 # kern_common: INTERFACE library carrying the includes, defines, and flags
