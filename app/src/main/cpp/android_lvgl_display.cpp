@@ -258,6 +258,12 @@ void kern_android_display_set_window(ANativeWindow *window) {
     g_window = window;
     update_window_size_locked();
     apply_size_locked();
+    // The new Android surface's buffer queue is empty. LVGL won't flush
+    // again until something dirties the UI, so an idle screen (login, pin)
+    // would stay black after lock/unlock or app-switch. Push the existing
+    // framebuffer once so the user sees the last rendered frame
+    // immediately.
+    present_locked();
 }
 
 void kern_android_display_set_touch(int action, float surface_x, float surface_y) {
