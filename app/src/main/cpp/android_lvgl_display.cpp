@@ -39,6 +39,13 @@ int32_t g_touch_y = 0;
 // present_locked() copies it into the current ANativeWindow buffer.
 std::vector<uint32_t> g_framebuffer;
 
+// Per-output-pixel lookup tables that map viewport coordinates to the
+// corresponding row offset / column index in g_framebuffer. Rebuilt under
+// g_display_mutex whenever recompute_view_locked() runs, so the
+// present_locked inner loop is a pure load/swap/store with no float math.
+std::vector<uint32_t> g_src_row_off_lut;  // dy -> sy * g_logical_w
+std::vector<int32_t>  g_src_x_lut;        // dx -> sx
+
 uint32_t now_ms() {
     timespec ts {};
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -65,30 +72,47 @@ void choose_logical_size_locked() {
     g_logical_h = g_fallback_h > 0 ? g_fallback_h : 720;
 }
 
+void rebuild_view_luts_locked() {
+    g_src_x_lut.resize(static_cast<size_t>(std::max(0, g_view_w)));
+    g_src_row_off_lut.resize(static_cast<size_t>(std::max(0, g_view_h)));
+    if (g_view_w <= 0 || g_view_h <= 0 || g_logical_w <= 0 || g_logical_h <= 0) {
+        return;
+    }
+    const float inv_scale = 1.0f / g_scale;
+    const int32_t max_x = g_logical_w - 1;
+    const int32_t max_y = g_logical_h - 1;
+    for (int32_t dx = 0; dx < g_view_w; ++dx) {
+        g_src_x_lut[static_cast<size_t>(dx)] =
+            std::min(max_x, static_cast<int32_t>(dx * inv_scale));
+    }
+    for (int32_t dy = 0; dy < g_view_h; ++dy) {
+        const int32_t sy = std::min(max_y, static_cast<int32_t>(dy * inv_scale));
+        g_src_row_off_lut[static_cast<size_t>(dy)] =
+            static_cast<uint32_t>(sy) * static_cast<uint32_t>(g_logical_w);
+    }
+}
+
 void recompute_view_locked() {
     if (g_surface_w <= 0 || g_surface_h <= 0 || g_logical_w <= 0 || g_logical_h <= 0) {
         g_view_x = g_view_y = g_view_w = g_view_h = 0;
         g_scale = 1.0f;
-        return;
-    }
-
-    if (g_layout == KERN_ANDROID_LAYOUT_SURFACE &&
-        g_logical_w == g_surface_w && g_logical_h == g_surface_h) {
+    } else if (g_layout == KERN_ANDROID_LAYOUT_SURFACE &&
+               g_logical_w == g_surface_w && g_logical_h == g_surface_h) {
         g_view_x = 0;
         g_view_y = 0;
         g_view_w = g_surface_w;
         g_view_h = g_surface_h;
         g_scale = 1.0f;
-        return;
+    } else {
+        const float sx = static_cast<float>(g_surface_w) / static_cast<float>(g_logical_w);
+        const float sy = static_cast<float>(g_surface_h) / static_cast<float>(g_logical_h);
+        g_scale = std::min(sx, sy);
+        g_view_w = std::max(1, static_cast<int32_t>(g_logical_w * g_scale));
+        g_view_h = std::max(1, static_cast<int32_t>(g_logical_h * g_scale));
+        g_view_x = (g_surface_w - g_view_w) / 2;
+        g_view_y = (g_surface_h - g_view_h) / 2;
     }
-
-    const float sx = static_cast<float>(g_surface_w) / static_cast<float>(g_logical_w);
-    const float sy = static_cast<float>(g_surface_h) / static_cast<float>(g_logical_h);
-    g_scale = std::min(sx, sy);
-    g_view_w = std::max(1, static_cast<int32_t>(g_logical_w * g_scale));
-    g_view_h = std::max(1, static_cast<int32_t>(g_logical_h * g_scale));
-    g_view_x = (g_surface_w - g_view_w) / 2;
-    g_view_y = (g_surface_h - g_view_h) / 2;
+    rebuild_view_luts_locked();
 }
 
 void update_window_size_locked() {
@@ -154,15 +178,15 @@ void present_locked() {
     }
 
     if (g_view_w > 0 && g_view_h > 0) {
-        const float inv_scale = 1.0f / g_scale;
+        const uint32_t *fb_base = g_framebuffer.data();
+        const int32_t *x_lut = g_src_x_lut.data();
+        const uint32_t *row_off_lut = g_src_row_off_lut.data();
         for (int32_t dy = 0; dy < g_view_h; ++dy) {
-            const int32_t sy = std::min(g_logical_h - 1, static_cast<int32_t>(dy * inv_scale));
-            const uint32_t *src_row = &g_framebuffer[static_cast<size_t>(sy) * g_logical_w];
+            const uint32_t *src_row = fb_base + row_off_lut[dy];
             auto *row = reinterpret_cast<uint32_t *>(
                 base + (g_view_y + dy) * stride_bytes + g_view_x * 4);
             for (int32_t dx = 0; dx < g_view_w; ++dx) {
-                const int32_t sx = std::min(g_logical_w - 1, static_cast<int32_t>(dx * inv_scale));
-                row[dx] = xrgb_to_rgba(src_row[sx]);
+                row[dx] = xrgb_to_rgba(src_row[x_lut[dx]]);
             }
         }
     }
@@ -265,4 +289,6 @@ void kern_android_display_destroy(void) {
     }
     g_display = nullptr;
     g_framebuffer.clear();
+    g_src_x_lut.clear();
+    g_src_row_off_lut.clear();
 }
