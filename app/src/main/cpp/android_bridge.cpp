@@ -245,3 +245,4 @@ Java_com_odudex_kern_KernNative_destroy(JNIEnv *, jobject) {
     kern_android_display_destroy();
     g_created = false;
 }
+

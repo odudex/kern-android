@@ -193,13 +193,17 @@ set(KERN_SIM_SOURCES
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/stubs.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/nvs_sim.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/efuse_hmac_sim.c
-    ${KERN_DIR}/simulator/platform/esp_idf_stubs/freertos_sim.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/storage_stub.c
     ${KERN_DIR}/simulator/platform/sd_card_sim/sd_card_sim.c
-    ${KERN_DIR}/simulator/platform/video_sim/video_sim.c
-    ${KERN_DIR}/simulator/platform/video_sim/stb_image_impl.c
     ${KERN_DIR}/simulator/platform/bsp_sim/pmic_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/android_freertos.c
 )
+# freertos_sim.c is replaced on Android by android_freertos.c — bionic's
+# pthread_cancel is a no-op, so the upstream vTaskSuspend(NULL) → pause()
+# never gets cancelled and vTaskDelete's pthread_join hangs forever.
+# video_sim.c is replaced on Android by android_video.c (added to kern_android
+# below). stb_image_impl.c was only used by video_sim.c for PNG/JPG decoding
+# and has no other consumer in the Android build.
 add_library(kern_sim_stubs STATIC ${KERN_SIM_SOURCES})
 target_link_libraries(kern_sim_stubs PUBLIC kern_common lvgl wally)
 
@@ -239,6 +243,7 @@ add_library(kern_android SHARED
     android_bsp.c
     android_lvgl_display.cpp
     android_posix_compat.c
+    android_video.c
 )
 target_link_libraries(kern_android PRIVATE
     kern_core

@@ -1,6 +1,7 @@
 package com.odudex.kern
 
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.MotionEvent
 import android.view.Surface
@@ -20,22 +21,40 @@ class MainActivity : Activity() {
         hideSystemUi()
         kernView = KernSurfaceView(this)
         setContentView(kernView)
+        CameraManager.attach(this)
     }
 
     override fun onResume() {
         super.onResume()
         hideSystemUi()
         KernNative.resume()
+        CameraManager.onActivityResume()
     }
 
     override fun onPause() {
+        CameraManager.onActivityPause()
         KernNative.pause()
         super.onPause()
     }
 
     override fun onDestroy() {
+        CameraManager.detach()
         kernView.shutdown()
         super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        if (requestCode == CameraManager.PERMISSION_REQUEST_CODE) {
+            val granted = grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            CameraManager.onPermissionResult(granted)
+            return
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
     }
 
     private fun hideSystemUi() {
@@ -112,15 +131,3 @@ private class KernSurfaceView(context: Activity) : SurfaceView(context), Surface
     }
 }
 
-private object KernNative {
-    init {
-        System.loadLibrary("kern_android")
-    }
-
-    external fun create(surface: Surface, width: Int, height: Int, filesDir: String, board: String)
-    external fun resize(surface: Surface, width: Int, height: Int)
-    external fun touch(action: Int, x: Float, y: Float)
-    external fun pause()
-    external fun resume()
-    external fun destroy()
-}

@@ -24,8 +24,12 @@ static void init_lvgl_mutex(void) {
 }
 
 static int mutex_timedlock_ms(pthread_mutex_t *mutex, uint32_t timeout_ms) {
+    /* ESP-IDF/FreeRTOS semantics: timeout_ms == 0 is a non-blocking try-lock.
+     * Kern's camera frame callback (scanner.c, capture_entropy.c) relies on
+     * bsp_display_lock(0) returning false immediately when the UI is held;
+     * blocking here causes an AB-BA deadlock with app_video_close. */
     if (timeout_ms == 0) {
-        return pthread_mutex_lock(mutex);
+        return pthread_mutex_trylock(mutex);
     }
 
     struct timespec ts;
