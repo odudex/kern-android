@@ -8,6 +8,9 @@ app/.cxx/
 app/src/main/cpp/.cxx/
 wrapper/dists/
 local.properties
+keystore.properties
+keystore.properties.example
+release.sh
 *.iml
 .idea/
 captures/
