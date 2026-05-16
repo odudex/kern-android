@@ -2,11 +2,19 @@
  * Android Camera2-backed implementation of the video.h ABI.
  *
  * Replaces simulator/platform/video_sim/video_sim.c in the Android build.
- * Lifecycle calls from Kern (app_video_open / stream_start / stream_stop /
- * close) upcall directly into Kotlin's CameraManager via JNI, which drives
- * a Camera2 session. The session pushes YUV_420_888 frames back into
+ * Mirrors the simulator's lazy-open behavior so the camera light only turns
+ * on while a Kern camera page is active:
+ *   - app_video_init_once() allocates a placeholder RGB565 buffer at the
+ *     expected post-rotation resolution and marks the pipeline ready. It
+ *     does NOT touch Camera2 — there's nothing to negotiate yet.
+ *   - app_video_start() opens the Camera2 device, configures the session
+ *     (which negotiates the real sensor size and may resize the buffer),
+ *     and starts streaming via JNI upcalls into Kotlin CameraManager.
+ *   - app_video_stop() stops streaming and closes Camera2, releasing the
+ *     hardware while keeping the frame buffer for the next start.
+ * The Kotlin side pushes YUV_420_888 frames into
  * Java_com_odudex_kern_CameraManager_deliverCameraFrame, which converts
- * to RGB565 and invokes the Kern-registered frame callback.
+ * to RGB565 (rotated 90° CW) and invokes the Kern-registered callback.
  */
 
 #include "video/video.h"
@@ -35,17 +43,19 @@
 
 static const char *TAG = "android_video";
 
-#define MAX_USER_BUFS 4
-#define FAKE_VIDEO_FD 42
+/* Placeholder resolution used between init_once() and the first start().
+ * Matches Kotlin's TARGET_W/TARGET_H (1280x960 sensor) rotated 90° CW. If
+ * Camera2 negotiates a different output size, app_video_start() resizes
+ * the buffer before streaming begins. */
+#define PLACEHOLDER_W 960
+#define PLACEHOLDER_H 1280
 
 static app_video_frame_operation_cb_t s_frame_cb = NULL;
 static uint8_t *s_frame_buf = NULL;
 static uint32_t s_width = 0;
 static uint32_t s_height = 0;
 static size_t s_frame_size = 0;
-
-static uint8_t *s_user_bufs[MAX_USER_BUFS];
-static uint32_t s_num_user_bufs = 0;
+static bool s_initialized = false;
 
 static atomic_bool s_streaming = ATOMIC_VAR_INIT(false);
 
@@ -134,21 +144,6 @@ static inline uint8_t clip255(int v) {
     return (uint8_t)v;
 }
 
-static void reset_user_bufs_locked(void) {
-    s_num_user_bufs = 0;
-    memset(s_user_bufs, 0, sizeof(s_user_bufs));
-}
-
-static void reset_frame_state_locked(bool clear_callback) {
-    if (clear_callback) s_frame_cb = NULL;
-    free(s_frame_buf);
-    s_frame_buf = NULL;
-    s_frame_size = 0;
-    s_width = 0;
-    s_height = 0;
-    reset_user_bufs_locked();
-}
-
 JNIEXPORT void JNICALL
 Java_com_odudex_kern_CameraManager_deliverCameraFrame(JNIEnv *env, jclass clazz,
                                                        jobject y_buf, jint y_row_stride,
@@ -172,7 +167,6 @@ Java_com_odudex_kern_CameraManager_deliverCameraFrame(JNIEnv *env, jclass clazz,
     size_t dst_size = s_frame_size;
     uint32_t buf_w = s_width;
     uint32_t buf_h = s_height;
-    uint8_t *user_buf = (s_num_user_bufs > 0) ? s_user_bufs[0] : NULL;
 
     /* The sensor delivers landscape frames (W×H, e.g. 1280×960). Kern's UI
      * is portrait, so we rotate 90° CW during conversion into an H×W buffer
@@ -214,90 +208,54 @@ Java_com_odudex_kern_CameraManager_deliverCameraFrame(JNIEnv *env, jclass clazz,
         }
     }
 
-    uint8_t *deliver = dst_base;
-    if (user_buf) {
-        memcpy(user_buf, dst_base, dst_size);
-        deliver = user_buf;
-    }
-
-    if (cb) cb(deliver, 0, buf_w, buf_h, dst_size);
+    if (cb) cb(dst_base, 0, buf_w, buf_h, dst_size);
     pthread_mutex_unlock(&s_state_mutex);
 }
 
 /* --- video.h ABI --- */
 
-esp_err_t app_video_main(i2c_master_bus_handle_t i2c_bus_handle) {
+esp_err_t app_video_init_once(i2c_master_bus_handle_t i2c_bus_handle) {
     (void)i2c_bus_handle;
-    return ESP_OK;
-}
-
-int app_video_open(char *dev, video_fmt_t init_fmt) {
-    (void)dev;
-    (void)init_fmt;
 
     pthread_mutex_lock(&s_state_mutex);
-    reset_frame_state_locked(false);
-    pthread_mutex_unlock(&s_state_mutex);
-
-    /* Blocking upcall — Kotlin runs Camera2 open + session configure and
-     * calls setNegotiatedResolution() before returning. Width=0 signals
-     * failure (permission denied, no camera, ...). */
-    call_camera_void(s_mid_open, "camera_open");
-
-    pthread_mutex_lock(&s_state_mutex);
-    uint32_t w = s_width;
-    uint32_t h = s_height;
-    pthread_mutex_unlock(&s_state_mutex);
-
-    if (w == 0 || h == 0) {
-        ESP_LOGE(TAG, "Camera open failed (no negotiated resolution)");
-        return -1;
-    }
-
-    size_t size = (size_t)w * h * 2;
-    pthread_mutex_lock(&s_state_mutex);
-    s_frame_buf = malloc(size);
-    if (!s_frame_buf) {
-        reset_frame_state_locked(false);
+    if (s_initialized) {
         pthread_mutex_unlock(&s_state_mutex);
-        ESP_LOGE(TAG, "Failed to allocate %zu-byte frame buffer", size);
-        call_camera_void(s_mid_close, "camera_close");
-        return -1;
+        return ESP_OK;
     }
-    memset(s_frame_buf, 0, size);
-    s_frame_size = size;
-    pthread_mutex_unlock(&s_state_mutex);
 
-    ESP_LOGI(TAG, "Camera opened: %" PRIu32 "x%" PRIu32, w, h);
-    return FAKE_VIDEO_FD; /* Must be >= 0 (see scanner.c:926). */
-}
-
-esp_err_t app_video_set_bufs(int video_fd, uint32_t fb_num, const void **fb) {
-    (void)video_fd;
-    pthread_mutex_lock(&s_state_mutex);
-    reset_user_bufs_locked();
-    if (fb && fb_num > 0) {
-        uint32_t count = fb_num < MAX_USER_BUFS ? fb_num : MAX_USER_BUFS;
-        for (uint32_t i = 0; i < count; i++) {
-            s_user_bufs[i] = (uint8_t *)fb[i];
-        }
-        s_num_user_bufs = count;
+    /* Allocate placeholder buffer at the expected post-rotation size so
+     * app_video_is_ready() can return true and pages can query the buffer
+     * size before they call app_video_start(). The real Camera2 device
+     * stays closed until then — that's what keeps the camera light off
+     * outside of camera pages. */
+    s_width = PLACEHOLDER_W;
+    s_height = PLACEHOLDER_H;
+    s_frame_size = (size_t)s_width * s_height * 2;
+    s_frame_buf = calloc(1, s_frame_size);
+    if (!s_frame_buf) {
+        s_frame_size = 0;
+        s_width = 0;
+        s_height = 0;
+        pthread_mutex_unlock(&s_state_mutex);
+        ESP_LOGE(TAG, "Failed to allocate placeholder frame buffer");
+        return ESP_ERR_NO_MEM;
     }
+    s_initialized = true;
     pthread_mutex_unlock(&s_state_mutex);
+    ESP_LOGI(TAG, "Video pipeline initialized (placeholder %ux%u)",
+             PLACEHOLDER_W, PLACEHOLDER_H);
     return ESP_OK;
 }
 
-esp_err_t app_video_get_bufs(int fb_num, void **fb) {
-    if (!fb) return ESP_FAIL;
+bool app_video_is_ready(void) {
     pthread_mutex_lock(&s_state_mutex);
-    for (int i = 0; i < fb_num; i++) {
-        uint32_t idx = (uint32_t)i;
-        fb[i] = (s_num_user_bufs > 0 && idx < s_num_user_bufs && s_user_bufs[idx])
-                    ? s_user_bufs[idx]
-                    : s_frame_buf;
-    }
+    bool ready = s_initialized && s_frame_buf != NULL;
     pthread_mutex_unlock(&s_state_mutex);
-    return ESP_OK;
+    return ready;
+}
+
+bool app_video_is_streaming(void) {
+    return atomic_load_explicit(&s_streaming, memory_order_acquire);
 }
 
 uint32_t app_video_get_buf_size(void) {
@@ -315,69 +273,115 @@ esp_err_t app_video_get_resolution(uint32_t *width, uint32_t *height) {
     return ESP_OK;
 }
 
-esp_err_t app_video_register_frame_operation_cb(app_video_frame_operation_cb_t cb) {
-    pthread_mutex_lock(&s_state_mutex);
-    s_frame_cb = cb;
-    pthread_mutex_unlock(&s_state_mutex);
-    return ESP_OK;
-}
-
-esp_err_t app_video_stream_task_start(int video_fd, int core_id) {
-    (void)video_fd;
+esp_err_t app_video_start(app_video_frame_operation_cb_t cb, int core_id) {
     (void)core_id;
+    if (!cb) return ESP_ERR_INVALID_ARG;
+
+    pthread_mutex_lock(&s_state_mutex);
+    if (!s_initialized) {
+        pthread_mutex_unlock(&s_state_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    pthread_mutex_unlock(&s_state_mutex);
+
     bool expected = false;
     if (!atomic_compare_exchange_strong_explicit(&s_streaming, &expected, true,
                                                  memory_order_acq_rel,
                                                  memory_order_acquire)) {
-        return ESP_OK;
+        return ESP_ERR_INVALID_STATE;
     }
+
+    /* Blocking upcall — Kotlin runs Camera2 open + session configure and
+     * calls setNegotiatedResolution() before returning. Width=0 signals
+     * failure (permission denied, no camera, ...). */
+    call_camera_void(s_mid_open, "camera_open");
+
+    pthread_mutex_lock(&s_state_mutex);
+    uint32_t w = s_width;
+    uint32_t h = s_height;
+    pthread_mutex_unlock(&s_state_mutex);
+
+    if (w == 0 || h == 0) {
+        ESP_LOGE(TAG, "Camera open failed (no negotiated resolution)");
+        atomic_store_explicit(&s_streaming, false, memory_order_release);
+        /* Restore placeholder so is_ready / get_buf_size remain valid and
+         * a later page can re-attempt opening. */
+        pthread_mutex_lock(&s_state_mutex);
+        s_width = PLACEHOLDER_W;
+        s_height = PLACEHOLDER_H;
+        size_t needed = (size_t)s_width * s_height * 2;
+        if (!s_frame_buf || s_frame_size != needed) {
+            free(s_frame_buf);
+            s_frame_buf = calloc(1, needed);
+            s_frame_size = s_frame_buf ? needed : 0;
+        }
+        pthread_mutex_unlock(&s_state_mutex);
+        return ESP_FAIL;
+    }
+
+    /* Resize the frame buffer if Camera2 negotiated a size different from
+     * the placeholder (or from the previous session). */
+    size_t needed = (size_t)w * h * 2;
+    pthread_mutex_lock(&s_state_mutex);
+    if (!s_frame_buf || s_frame_size != needed) {
+        free(s_frame_buf);
+        s_frame_buf = malloc(needed);
+        if (!s_frame_buf) {
+            s_frame_size = 0;
+            s_width = 0;
+            s_height = 0;
+            pthread_mutex_unlock(&s_state_mutex);
+            ESP_LOGE(TAG, "Failed to allocate %zu-byte frame buffer", needed);
+            call_camera_void(s_mid_close, "camera_close");
+            atomic_store_explicit(&s_streaming, false, memory_order_release);
+            return ESP_ERR_NO_MEM;
+        }
+        memset(s_frame_buf, 0, needed);
+        s_frame_size = needed;
+    }
+    s_frame_cb = cb;
+    pthread_mutex_unlock(&s_state_mutex);
+
+    ESP_LOGI(TAG, "Camera opened: %" PRIu32 "x%" PRIu32, w, h);
+
     call_camera_void(s_mid_start, "camera_start");
     return ESP_OK;
 }
 
-esp_err_t app_video_stream_task_stop(int video_fd) {
-    (void)video_fd;
+esp_err_t app_video_stop(void) {
     bool expected = true;
     if (!atomic_compare_exchange_strong_explicit(&s_streaming, &expected, false,
                                                  memory_order_acq_rel,
                                                  memory_order_acquire)) {
+        /* Already stopped — still clear the callback to match firmware. */
+        pthread_mutex_lock(&s_state_mutex);
+        s_frame_cb = NULL;
+        pthread_mutex_unlock(&s_state_mutex);
         return ESP_OK;
     }
-    call_camera_void(s_mid_stop, "camera_stop");
-    return ESP_OK;
-}
 
-esp_err_t app_video_close(int video_fd) {
-    app_video_stream_task_stop(video_fd);
+    /* Stop repeating then close. Kotlin closeCamera() blocks until
+     * onClosed() fires, so on return the Camera2 device is fully released
+     * and the next app_video_start() can re-open without racing. */
+    call_camera_void(s_mid_stop,  "camera_stop");
     call_camera_void(s_mid_close, "camera_close");
 
     pthread_mutex_lock(&s_state_mutex);
-    reset_frame_state_locked(true);
+    s_frame_cb = NULL;
     pthread_mutex_unlock(&s_state_mutex);
     return ESP_OK;
 }
 
-esp_err_t app_video_set_ae_target(int video_fd, uint32_t level) {
-    (void)video_fd;
+esp_err_t app_video_set_ae_target(uint32_t level) {
     (void)level;
     return ESP_OK;
 }
 
-esp_err_t app_video_set_focus(int video_fd, uint32_t position) {
-    (void)video_fd;
+esp_err_t app_video_set_focus(uint32_t position) {
     (void)position;
     return ESP_OK;
 }
 
-bool app_video_has_focus_motor(int video_fd) {
-    (void)video_fd;
+bool app_video_has_focus_motor(void) {
     return false;
-}
-
-esp_err_t app_video_disable_af(void) {
-    return ESP_OK;
-}
-
-esp_err_t app_video_deinit(void) {
-    return ESP_OK;
 }

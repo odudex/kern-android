@@ -14,7 +14,7 @@
 extern "C" {
 #include "bsp/pmic.h"
 #include "core/pin.h"
-#include "core/session.h"
+#include "utils/session.h"
 #include "core/settings.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -28,6 +28,7 @@ extern "C" {
 #include "ui/nav.h"
 #include "ui/theme.h"
 #include "utils/bip39_filter.h"
+#include "video/video.h"
 #include "wally_core.h"
 }
 
@@ -142,6 +143,13 @@ bool start_kern(ANativeWindow *window, int width, int height,
 
     settings_init();
     bsp_pmic_init();
+
+    esp_err_t video_ret = app_video_init_once(nullptr);
+    if (video_ret != ESP_OK) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "Video pipeline init failed: 0x%x", video_ret);
+    }
+
     kern_logo_animated(scr);
     bip39_filter_init();
     pin_init();

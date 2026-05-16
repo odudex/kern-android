@@ -171,10 +171,45 @@ object CameraManager {
     @JvmStatic
     fun closeCamera() {
         streaming = false
-        try { session?.close() } catch (_: Exception) {}
-        session = null
-        try { reader?.close() } catch (_: Exception) {}
-        reader = null
+
+        // Drain the camera handler before tearing down the ImageReader.
+        // onImageAvailable runs on this handler and hands plane direct
+        // ByteBuffers to JNI deliverCameraFrame; once reader.close() runs,
+        // those buffers are unmapped and concurrent JNI reads SEGV. Posting
+        // the listener-removal + reader.close() onto the same handler
+        // serializes them after any in-flight callback.
+        val h = handler
+        if (h != null) {
+            val drainLatch = CountDownLatch(1)
+            val posted = try {
+                h.post {
+                    try {
+                        try { reader?.setOnImageAvailableListener(null, h) } catch (_: Exception) {}
+                        try { session?.close() } catch (_: Exception) {}
+                        session = null
+                        try { reader?.close() } catch (_: Exception) {}
+                        reader = null
+                    } finally {
+                        drainLatch.countDown()
+                    }
+                }
+            } catch (_: Exception) { false }
+            if (posted) {
+                if (!awaitLatch(drainLatch, CAMERA_TIMEOUT_SECONDS)) {
+                    Log.w(TAG, "closeCamera: timed out draining camera handler")
+                }
+            } else {
+                try { session?.close() } catch (_: Exception) {}
+                session = null
+                try { reader?.close() } catch (_: Exception) {}
+                reader = null
+            }
+        } else {
+            try { session?.close() } catch (_: Exception) {}
+            session = null
+            try { reader?.close() } catch (_: Exception) {}
+            reader = null
+        }
 
         val d = camera
         camera = null
