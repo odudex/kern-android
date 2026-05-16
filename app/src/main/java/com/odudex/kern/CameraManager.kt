@@ -246,8 +246,20 @@ object CameraManager {
     private fun pickOutputSize(mgr: Camera2Manager, cameraId: String): Size? = try {
         val map = mgr.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) as StreamConfigurationMap?
-        val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888)
-        sizes?.maxWithOrNull(compareBy<Size>({ sizePreference(it) }, { it.area }))
+        val sizes = map?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
+        // scanner.c does a fixed-size centered square crop on whatever we
+        // deliver, so a larger sensor output reads as more "zoomed in" —
+        // high-end phones can expose e.g. 4032x3024 here. Within the best
+        // tier that meets our minimum resolution, prefer the smallest
+        // qualifying size so the camera ISP downscales the full FOV for us.
+        // Only fall back to the largest if nothing meets the minimum.
+        val bestTier = sizes?.maxOfOrNull { sizePreference(it) }
+        val candidates = sizes?.filter { sizePreference(it) == bestTier }
+        when {
+            candidates.isNullOrEmpty() -> null
+            (bestTier ?: 0) > 0 -> candidates.minByOrNull { it.area }
+            else -> candidates.maxByOrNull { it.area }
+        }
     } catch (e: Exception) {
         Log.e(TAG, "pickOutputSize: $e")
         null
