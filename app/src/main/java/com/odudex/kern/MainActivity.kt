@@ -19,9 +19,22 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        instance = this
         requestWindowFeature(Window.FEATURE_NO_TITLE)
         hideSystemUi()
         showWarningDialog()
+    }
+
+    companion object {
+        @Volatile @JvmStatic private var instance: MainActivity? = null
+
+        // Called from native (android_bridge.cpp::kern_android_finish_app)
+        // when Kern's esp_restart fires on the "unload key and reboot" path.
+        @JvmStatic
+        fun requestFinish() {
+            val act = instance ?: return
+            act.runOnUiThread { act.finishAndRemoveTask() }
+        }
     }
 
     override fun onResume() {
@@ -46,6 +59,7 @@ class MainActivity : Activity() {
             CameraManager.detach()
             kernView?.shutdown()
         }
+        if (instance === this) instance = null
         super.onDestroy()
     }
 

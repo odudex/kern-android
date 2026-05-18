@@ -10,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unistd.h>
 
 extern "C" {
 #include "bsp/pmic.h"
@@ -41,6 +42,31 @@ std::thread g_loop_thread;
 std::atomic_bool g_running {false};
 std::atomic_bool g_paused {false};
 bool g_created = false;
+
+JavaVM *g_jvm = nullptr;
+jclass g_main_activity_class = nullptr;
+jmethodID g_mid_request_finish = nullptr;
+
+void cache_finish_app_binding(JNIEnv *env) {
+    if (g_jvm) return;
+    if (env->GetJavaVM(&g_jvm) != JNI_OK) {
+        g_jvm = nullptr;
+        return;
+    }
+    jclass local = env->FindClass("com/odudex/kern/MainActivity");
+    if (!local) {
+        env->ExceptionClear();
+        return;
+    }
+    g_main_activity_class = (jclass)env->NewGlobalRef(local);
+    env->DeleteLocalRef(local);
+    if (!g_main_activity_class) return;
+    g_mid_request_finish =
+        env->GetStaticMethodID(g_main_activity_class, "requestFinish", "()V");
+    if (!g_mid_request_finish) {
+        env->ExceptionClear();
+    }
+}
 
 void post_unlock_cb();
 void session_expired_handler();
@@ -181,6 +207,7 @@ Java_com_odudex_kern_KernNative_create(JNIEnv *env, jobject, jobject surface,
                                        jint width, jint height, jstring files_dir,
                                        jstring board) {
     std::lock_guard<std::mutex> guard(g_lifecycle_mutex);
+    cache_finish_app_binding(env);
     ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
     if (!window) return;
 
@@ -252,5 +279,35 @@ Java_com_odudex_kern_KernNative_destroy(JNIEnv *, jobject) {
     }
     kern_android_display_destroy();
     g_created = false;
+}
+
+// Called from the patched esp_restart() in stubs.c when Kern wants to
+// "unload key and reboot" on a board without a PMIC (the Android default).
+// Hands control back to MainActivity, which finishes the task on the UI
+// thread — giving Android lifecycle a chance to run instead of exiting
+// the process with an abnormal status.
+extern "C" void kern_android_finish_app(void) {
+    if (!g_jvm || !g_main_activity_class || !g_mid_request_finish) {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "finish_app: JNI binding missing, exiting");
+        _exit(0);
+    }
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    jint res = g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6);
+    if (res == JNI_EDETACHED) {
+        if (g_jvm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) {
+            _exit(0);
+        }
+        attached = true;
+    } else if (res != JNI_OK || !env) {
+        _exit(0);
+    }
+    env->CallStaticVoidMethod(g_main_activity_class, g_mid_request_finish);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    if (attached) g_jvm->DetachCurrentThread();
 }
 
