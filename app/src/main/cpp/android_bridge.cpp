@@ -15,6 +15,7 @@
 extern "C" {
 #include "bsp/pmic.h"
 #include "core/pin.h"
+#include "core/storage.h"
 #include "utils/session.h"
 #include "core/settings.h"
 #include "esp_err.h"
@@ -23,6 +24,7 @@ extern "C" {
 #include "nvs_flash.h"
 #include "pages/login/login.h"
 #include "pages/pin/pin_page.h"
+#include "sim_flash.h"
 #include "sim_nvs.h"
 #include "sim_sdcard.h"
 #include "ui/assets/kern_logo_lvgl.h"
@@ -130,7 +132,9 @@ bool start_kern(ANativeWindow *window, int width, int height,
 
     std::string base_dir = files_dir ? files_dir : "/data/data/com.odudex.kern/files";
     std::string nvs_dir = base_dir + "/nvs";
+    std::string flash_dir = base_dir + "/spiffs";
     sim_nvs_set_data_dir(nvs_dir.c_str());
+    sim_flash_set_data_dir(flash_dir.c_str());
     sim_sdcard_set_data_dir(base_dir.c_str());
 
     if (wally_init(0) != WALLY_OK) {
@@ -164,6 +168,13 @@ bool start_kern(ANativeWindow *window, int width, int height,
     }
     if (ret != ESP_OK) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "nvs_flash_init failed: 0x%x", ret);
+        return false;
+    }
+
+    ret = storage_init();
+    if (ret != ESP_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                            "storage_init failed for %s: 0x%x", flash_dir.c_str(), ret);
         return false;
     }
 
@@ -310,4 +321,3 @@ extern "C" void kern_android_finish_app(void) {
     }
     if (attached) g_jvm->DetachCurrentThread();
 }
-

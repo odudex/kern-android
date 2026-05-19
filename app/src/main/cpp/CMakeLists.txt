@@ -225,7 +225,9 @@ set(KERN_SIM_SOURCES
     ${KERN_STUBS_PATCHED}
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/nvs_sim.c
     ${KERN_DIR}/simulator/platform/esp_idf_stubs/efuse_hmac_sim.c
-    ${KERN_DIR}/simulator/platform/esp_idf_stubs/storage_stub.c
+    ${KERN_DIR}/simulator/platform/esp_idf_stubs/sim_flash.c
+    ${KERN_DIR}/simulator/platform/esp_idf_stubs/sim_storage_hooks.c
+    ${KERN_DIR}/simulator/platform/esp_idf_stubs/storage_sim.c
     ${KERN_DIR}/simulator/platform/sd_card_sim/sd_card_sim.c
     ${KERN_DIR}/simulator/platform/bsp_sim/pmic_sim.c
     ${CMAKE_CURRENT_SOURCE_DIR}/android_freertos.c
@@ -242,7 +244,7 @@ target_link_libraries(kern_sim_stubs PUBLIC kern_common lvgl wally)
 # ---------------------------------------------------------------------------
 # kern_core: Kern firmware application code + first-party components.
 # Excludes main.c (we drive lifecycle from JNI), test/, and core/storage.c
-# (replaced by simulator's storage_stub.c).
+# (compiled through simulator's storage_sim.c with SPIFFS path hooks).
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE KERN_MAIN_SOURCES CONFIGURE_DEPENDS ${KERN_DIR}/main/*.c)
 list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/main\\.c$")
