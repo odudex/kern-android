@@ -12,10 +12,12 @@ import android.view.View
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import kotlin.system.exitProcess
 
 class MainActivity : Activity() {
     private var kernView: KernSurfaceView? = null
     private var warningAccepted = false
+    private var exitProcessOnDestroy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,12 +30,16 @@ class MainActivity : Activity() {
     companion object {
         @Volatile @JvmStatic private var instance: MainActivity? = null
 
-        // Called from native (android_bridge.cpp::kern_android_finish_app)
-        // when Kern's esp_restart fires on the "unload key and reboot" path.
+        // Called from native on Kern's esp_restart path. Restart semantics
+        // demand a fresh process; flag onDestroy to kill it so native LVGL,
+        // key, and wallet globals don't survive into the next launch.
         @JvmStatic
         fun requestFinish() {
             val act = instance ?: return
-            act.runOnUiThread { act.finishAndRemoveTask() }
+            act.runOnUiThread {
+                act.exitProcessOnDestroy = true
+                act.finishAndRemoveTask()
+            }
         }
     }
 
@@ -61,6 +67,7 @@ class MainActivity : Activity() {
         }
         if (instance === this) instance = null
         super.onDestroy()
+        if (exitProcessOnDestroy) exitProcess(0)
     }
 
     override fun onRequestPermissionsResult(

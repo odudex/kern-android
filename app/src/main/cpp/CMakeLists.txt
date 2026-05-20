@@ -203,20 +203,15 @@ string(REPLACE
     ".version      = \"sim-dev\""
     ".version      = \"${KERN_VERSION}-sim-dev\""
     _stubs_contents "${_stubs_contents}")
-# Replace the simulator's esp_restart (exit(1)) with a call into the
-# Android bridge so the Activity is finished cleanly via Android lifecycle
-# instead of the process being killed with an abnormal exit code.
+# Hand esp_restart off to the Android bridge. esp_restart is noreturn in
+# ESP-IDF, so the inline extern declaration must carry the same attribute —
+# otherwise the compiler omits the `ret` and execution falls through into
+# the next .text symbol.
 string(REGEX REPLACE
     [=[void esp_restart\(void\)[^}]*\}]=]
-    [=[void esp_restart(void) { extern void kern_android_finish_app(void); kern_android_finish_app(); }]=]
+    [=[void esp_restart(void) { extern __attribute__((noreturn)) void kern_android_finish_app(void); kern_android_finish_app(); }]=]
     _stubs_contents "${_stubs_contents}")
 file(WRITE ${KERN_STUBS_PATCHED} "${_stubs_contents}")
-# The esp_restart prototype is declared noreturn, but our Android replacement
-# must return so the LVGL event handler can unwind (the render thread holds
-# the LVGL lock and is joined by KernNative.destroy on the UI thread — see
-# android_bridge.cpp::kern_android_finish_app for the lifecycle rationale).
-set_source_files_properties(${KERN_STUBS_PATCHED} PROPERTIES
-    COMPILE_FLAGS "-Wno-invalid-noreturn")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${KERN_DIR}/version.txt
     ${KERN_STUBS_SRC})

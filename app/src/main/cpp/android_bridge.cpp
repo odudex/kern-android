@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -292,32 +293,39 @@ Java_com_odudex_kern_KernNative_destroy(JNIEnv *, jobject) {
     g_created = false;
 }
 
-// Called from the patched esp_restart() in stubs.c when Kern wants to
-// "unload key and reboot" on a board without a PMIC (the Android default).
-// Hands control back to MainActivity, which finishes the task on the UI
-// thread — giving Android lifecycle a chance to run instead of exiting
-// the process with an abnormal status.
-extern "C" void kern_android_finish_app(void) {
-    if (!g_jvm || !g_main_activity_class || !g_mid_request_finish) {
-        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
-                            "finish_app: JNI binding missing, exiting");
-        _exit(0);
-    }
-    JNIEnv *env = nullptr;
-    bool attached = false;
-    jint res = g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6);
-    if (res == JNI_EDETACHED) {
-        if (g_jvm->AttachCurrentThreadAsDaemon(&env, nullptr) != JNI_OK) {
-            _exit(0);
+// Called from patched esp_restart on the render thread (inside lv_timer_handler,
+// holding the LVGL lock). Schedules MainActivity.finishAndRemoveTask on the
+// UI thread, then pthread_exits — noreturn because esp_restart is.
+extern "C" __attribute__((noreturn)) void kern_android_finish_app(void) {
+    if (g_jvm && g_main_activity_class && g_mid_request_finish) {
+        JNIEnv *env = nullptr;
+        bool attached = false;
+        jint res = g_jvm->GetEnv((void **)&env, JNI_VERSION_1_6);
+        if (res == JNI_EDETACHED) {
+            if (g_jvm->AttachCurrentThreadAsDaemon(&env, nullptr) == JNI_OK) {
+                attached = true;
+            } else {
+                env = nullptr;
+            }
+        } else if (res != JNI_OK) {
+            env = nullptr;
         }
-        attached = true;
-    } else if (res != JNI_OK || !env) {
+        if (env) {
+            env->CallStaticVoidMethod(g_main_activity_class, g_mid_request_finish);
+            if (env->ExceptionCheck()) {
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+            }
+            if (attached) g_jvm->DetachCurrentThread();
+        }
+    } else {
+        __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                            "finish_app: JNI binding missing; exiting");
         _exit(0);
     }
-    env->CallStaticVoidMethod(g_main_activity_class, g_mid_request_finish);
-    if (env->ExceptionCheck()) {
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-    }
-    if (attached) g_jvm->DetachCurrentThread();
+
+    // Unblock KernNative.destroy's join(); the leaked LVGL lock dies with
+    // the process when MainActivity.onDestroy calls exitProcess().
+    g_running.store(false);
+    pthread_exit(nullptr);
 }
