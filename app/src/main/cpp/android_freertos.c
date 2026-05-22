@@ -148,6 +148,16 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t func, const char *name,
     return xTaskCreate(func, name, stack_size, param, priority, handle);
 }
 
+BaseType_t xTaskCreatePinnedToCoreWithCaps(TaskFunction_t func, const char *name,
+                                           uint32_t stack_size, void *param,
+                                           UBaseType_t priority,
+                                           TaskHandle_t *handle, int core_id,
+                                           uint32_t caps) {
+    (void)core_id;
+    (void)caps;
+    return xTaskCreate(func, name, stack_size, param, priority, handle);
+}
+
 void vTaskDelete(TaskHandle_t handle) {
     if (handle == NULL) {
         pthread_once(&s_task_key_once, create_task_key);
@@ -179,6 +189,10 @@ void vTaskDelete(TaskHandle_t handle) {
 
     pthread_join(t->thread, NULL);
     task_free(t);
+}
+
+void vTaskDeleteWithCaps(TaskHandle_t handle) {
+    vTaskDelete(handle);
 }
 
 void vTaskDelay(TickType_t ticks) {

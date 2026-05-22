@@ -385,3 +385,22 @@ esp_err_t app_video_set_focus(uint32_t position) {
 bool app_video_has_focus_motor(void) {
     return false;
 }
+
+bool app_video_has_ae_control(void) {
+    return false;
+}
+
+uint32_t app_video_ppa_snap_crop(uint32_t crop_max, uint32_t target) {
+    /* Camera2 path doesn't go through ESP32-P4 PPA, so the Q4.4 quantization
+     * doesn't apply. Mirror video_sim.c's behavior anyway — any call sites
+     * that scale the camera buffer will use the snapped value the same way. */
+    uint32_t target16 = target * 16u;
+    for (uint32_t n = 1; n <= 16; n++) {
+        if (target16 % n != 0)
+            continue;
+        uint32_t c = target16 / n;
+        if (c <= crop_max)
+            return c;
+    }
+    return target;
+}
