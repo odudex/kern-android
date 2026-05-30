@@ -29,7 +29,6 @@ extern "C" {
 #include "sim_nvs.h"
 #include "sim_sdcard.h"
 #include "ui/assets/kern_logo_lvgl.h"
-#include "ui/nav.h"
 #include "ui/theme.h"
 #include "utils/bip39_filter.h"
 #include "video/video.h"
@@ -90,7 +89,6 @@ void post_unlock_cb() {
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
-    nav_init(scr);
     login_page_create(scr);
 }
 
@@ -103,7 +101,6 @@ void splash_done_cb(lv_timer_t *timer) {
     if (pin_is_configured()) {
         pin_page_create(scr, PIN_PAGE_UNLOCK, post_unlock_cb, nullptr);
     } else {
-        nav_init(scr);
         login_page_create(scr);
     }
 }
