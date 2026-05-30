@@ -38,6 +38,10 @@ int32_t g_touch_y = 0;
 // LVGL renders dirty regions directly into g_framebuffer (DIRECT mode) and
 // present_locked() copies it into the current ANativeWindow buffer.
 std::vector<uint32_t> g_framebuffer;
+// Set by flush_cb when a refresh cycle finishes; consumed by
+// kern_android_display_flush_pending() in the render loop. Lets the actual
+// (blocking) present run outside the LVGL lock.
+bool g_present_pending = false;
 
 // Per-output-pixel lookup tables that map viewport coordinates to the
 // corresponding row offset / column index in g_framebuffer. Rebuilt under
@@ -196,11 +200,15 @@ void present_locked() {
 
 void flush_cb(lv_display_t *display, const lv_area_t * /*area*/, uint8_t * /*px_map*/) {
     // DIRECT mode: LVGL has already rendered dirty regions into g_framebuffer
-    // (which is the buffer it owns). We only need to present once per refresh
-    // cycle, on the final partial flush.
-    std::lock_guard<std::mutex> guard(g_display_mutex);
-    if (!g_framebuffer.empty() && lv_display_flush_is_last(display)) {
-        present_locked();
+    // (which is the buffer it owns). We only flag that new content is ready;
+    // the actual blocking present happens in the render loop after the LVGL
+    // lock is released (see kern_android_display_flush_pending). Presenting
+    // here would hold the LVGL lock through the ~16-20ms ANativeWindow
+    // blit/post, starving the camera frame callback's non-blocking lock and
+    // freezing the preview.
+    if (lv_display_flush_is_last(display)) {
+        std::lock_guard<std::mutex> guard(g_display_mutex);
+        g_present_pending = true;
     }
     lv_display_flush_ready(display);
 }
@@ -285,6 +293,14 @@ void kern_android_display_set_touch(int action, float surface_x, float surface_y
 void kern_android_display_present(void) {
     std::lock_guard<std::mutex> guard(g_display_mutex);
     present_locked();
+}
+
+void kern_android_display_flush_pending(void) {
+    std::lock_guard<std::mutex> guard(g_display_mutex);
+    if (g_present_pending) {
+        present_locked();
+        g_present_pending = false;
+    }
 }
 
 void kern_android_display_destroy(void) {

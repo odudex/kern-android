@@ -26,6 +26,11 @@ void kern_android_display_set_window(ANativeWindow *window);
 void kern_android_display_set_touch(int action, float surface_x, float surface_y);
 void kern_android_display_destroy(void);
 void kern_android_display_present(void);
+// Presents the framebuffer if a refresh produced new content since the last
+// present. Called from the render loop AFTER releasing the LVGL lock, so the
+// blocking ANativeWindow blit/post does not hold off the camera frame
+// callback's non-blocking display lock.
+void kern_android_display_flush_pending(void);
 
 #ifdef __cplusplus
 }

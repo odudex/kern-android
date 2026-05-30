@@ -116,6 +116,10 @@ void render_loop() {
         if (lvgl_port_lock(50)) {
             wait_ms = lv_timer_handler();
             lvgl_port_unlock();
+            // Present outside the LVGL lock: the blocking ANativeWindow
+            // blit/post must not hold off the camera frame callback's
+            // non-blocking display lock, or the preview starves.
+            kern_android_display_flush_pending();
         }
         if (wait_ms > 33) wait_ms = 33;
         if (wait_ms < 1) wait_ms = 1;

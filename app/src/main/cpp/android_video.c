@@ -44,11 +44,12 @@
 static const char *TAG = "android_video";
 
 /* Placeholder resolution used between init_once() and the first start().
- * Matches Kotlin's TARGET_W/TARGET_H (1280x960 sensor) rotated 90° CW. If
- * Camera2 negotiates a different output size, app_video_start() resizes
- * the buffer before streaming begins. */
-#define PLACEHOLDER_W 960
-#define PLACEHOLDER_H 1280
+ * The Android pipeline hands Kern a centered square (short side of the sensor
+ * output, ~720px — see deliverCameraFrame), so the placeholder is square too.
+ * If Camera2 negotiates a different size, app_video_start() resizes the buffer
+ * before streaming begins. */
+#define PLACEHOLDER_W 720
+#define PLACEHOLDER_H 720
 
 static app_video_frame_operation_cb_t s_frame_cb = NULL;
 static uint8_t *s_frame_buf = NULL;
@@ -168,42 +169,53 @@ Java_com_odudex_kern_CameraManager_deliverCameraFrame(JNIEnv *env, jclass clazz,
     uint32_t buf_w = s_width;
     uint32_t buf_h = s_height;
 
-    /* The sensor delivers landscape frames (W×H, e.g. 1280×960). Kern's UI
-     * is portrait, so we rotate 90° CW during conversion into an H×W buffer
-     * (e.g. 960×1280). Assumes SENSOR_ORIENTATION == 90 (the typical back-
-     * camera mount on phones); read that characteristic from Camera2 and
-     * branch on it here if we ever need to support other mounts. */
-    if (!dst_base || (uint32_t)width != buf_h || (uint32_t)height != buf_w ||
-        dst_size < (size_t)width * (size_t)height * 2) {
+    /* Kern's camera pages only ever consume a centered square of the frame, so
+     * we crop to that square *during* conversion rather than converting the
+     * whole landscape sensor frame and letting Kern's PPA crop afterwards —
+     * that skips the YUV→RGB565 cost of the side margins entirely (~25% of the
+     * frame) on the CPU-bound Android path.
+     *
+     * The sensor delivers landscape frames (W×H, e.g. 960×720); the square side
+     * S is the short axis. We take the centered S×S region and rotate it 90° CW
+     * into an S×S buffer for Kern's portrait UI. Assumes SENSOR_ORIENTATION ==
+     * 90 (the typical back-camera mount on phones); read that characteristic
+     * from Camera2 and branch here if we ever need to support other mounts. */
+    int32_t s = (width < height) ? width : height;
+    if (!dst_base || buf_w != (uint32_t)s || buf_h != (uint32_t)s ||
+        dst_size < (size_t)s * (size_t)s * 2) {
         pthread_mutex_unlock(&s_state_mutex);
         return;
     }
+    int32_t x0 = (width - s) / 2;  /* centered square column offset */
+    int32_t y0 = (height - s) / 2; /* centered square row offset */
 
     /* BT.601 limited-range YUV → RGB565, integer fixed-point. U/V are
      * subsampled 2:1 so each chroma sample is reused for a 2×2 block of
      * luma. pixel_stride is read from the plane (NV12-style interleaving
      * gives uPixelStride=2, planar gives 1 — never assume tight packing).
-     * 90° CW rotation: source (x, y) → dst (H-1-y, x), so dst index is
-     * x*H + (H-1-y). Iterating source-natural keeps Y/U/V reads sequential;
-     * dst writes step `H` apart but successive source rows fill adjacent
-     * dst columns, so the working set stays cache-friendly. */
+     * 90° CW rotation of the cropped square: source (x0+i, y0+j) → dst column
+     * (S-1-j), dst row i, i.e. dst index i*S + (S-1-j). Iterating source-natural
+     * keeps Y/U/V reads sequential; successive source rows fill adjacent dst
+     * columns. */
     uint16_t *dst = (uint16_t *)dst_base;
-    for (int32_t y = 0; y < height; y++) {
-        const uint8_t *y_row = y_plane + (size_t)y * y_row_stride;
-        const uint8_t *u_row = u_plane + (size_t)(y >> 1) * u_row_stride;
-        const uint8_t *v_row = v_plane + (size_t)(y >> 1) * v_row_stride;
-        size_t dst_col = (size_t)(height - 1 - y);
-        for (int32_t x = 0; x < width; x++) {
-            int Y = (int)y_row[x] - 16;
-            int U = (int)u_row[(x >> 1) * u_pixel_stride] - 128;
-            int V = (int)v_row[(x >> 1) * v_pixel_stride] - 128;
+    for (int32_t j = 0; j < s; j++) {
+        int32_t sy = y0 + j;
+        const uint8_t *y_row = y_plane + (size_t)sy * y_row_stride;
+        const uint8_t *u_row = u_plane + (size_t)(sy >> 1) * u_row_stride;
+        const uint8_t *v_row = v_plane + (size_t)(sy >> 1) * v_row_stride;
+        size_t dst_col = (size_t)(s - 1 - j);
+        for (int32_t i = 0; i < s; i++) {
+            int32_t sx = x0 + i;
+            int Y = (int)y_row[sx] - 16;
+            int U = (int)u_row[(sx >> 1) * u_pixel_stride] - 128;
+            int V = (int)v_row[(sx >> 1) * v_pixel_stride] - 128;
             int r = (298 * Y + 409 * V + 128) >> 8;
             int g = (298 * Y - 100 * U - 208 * V + 128) >> 8;
             int b = (298 * Y + 516 * U + 128) >> 8;
             uint8_t R = clip255(r);
             uint8_t G = clip255(g);
             uint8_t B = clip255(b);
-            dst[(size_t)x * (size_t)height + dst_col] =
+            dst[(size_t)i * (size_t)s + dst_col] =
                 (uint16_t)(((R & 0xF8) << 8) | ((G & 0xFC) << 3) | (B >> 3));
         }
     }

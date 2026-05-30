@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
+import android.util.Range
 import android.util.Size
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
@@ -27,8 +28,14 @@ object CameraManager {
     private const val TAG = "KernCamera"
     const val PERMISSION_REQUEST_CODE = 0xCA51
 
-    private const val TARGET_W = 1280
-    private const val TARGET_H = 960
+    // Kern's camera pages only ever use a centered square of the frame,
+    // downscaled to at most 720px (capture-entropy) / 600px (scanner). We
+    // therefore negotiate the smallest 4:3 sensor output whose short side
+    // still covers that 720px square, then hand Kern a pre-cropped square
+    // (see android_video.c). A larger sensor output would just be extra
+    // YUV→RGB565 work per frame on the CPU for pixels we crop away.
+    private const val TARGET_W = 960
+    private const val TARGET_H = 720
     private const val CAMERA_TIMEOUT_SECONDS = 10L
     private const val PERMISSION_TIMEOUT_SECONDS = 60L
     private const val IMAGE_READER_IMAGES = 3
@@ -138,11 +145,21 @@ object CameraManager {
         rb.addTarget(ir.surface)
         rb.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
         rb.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+        // Pin the auto-exposure frame-rate floor. Without this the HAL is free
+        // to lengthen frame duration in dim scenes to gain exposure, dropping
+        // preview to ~7-15fps — the reason scanning/entropy felt slow on phones
+        // but not on fixed-FPS device sensors or the webcam simulator.
+        pickFpsRange(mgr, cameraId)?.let { fps ->
+            rb.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fps)
+            Log.i(TAG, "AE target FPS range: $fps")
+        }
         requestBuilder = rb
 
-        // Negotiated buffer is sensor frame rotated 90° CW (see android_video.c).
-        Log.i(TAG, "Camera opened: sensor ${size.width}x${size.height} → ${size.height}x${size.width}")
-        setNegotiatedResolution(size.height, size.width)
+        // android_video.c center-crops the rotated sensor frame to a square, so
+        // the buffer Kern receives is square (short side of the sensor output).
+        val square = minOf(size.width, size.height)
+        Log.i(TAG, "Camera opened: sensor ${size.width}x${size.height} → ${square}x${square}")
+        setNegotiatedResolution(square, square)
     }
 
     @JvmStatic
@@ -262,6 +279,18 @@ object CameraManager {
         }
     } catch (e: Exception) {
         Log.e(TAG, "pickOutputSize: $e")
+        null
+    }
+
+    private fun pickFpsRange(mgr: Camera2Manager, cameraId: String): Range<Int>? = try {
+        val ranges = mgr.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        // Prefer the highest guaranteed floor; among equal floors prefer the
+        // narrowest (closest to fixed) range so the HAL can't trade frame rate
+        // for exposure. e.g. choose [30,30] over [30,60] and both over [7,30].
+        ranges?.maxWithOrNull(compareBy({ it.lower }, { -(it.upper - it.lower) }))
+    } catch (e: Exception) {
+        Log.e(TAG, "pickFpsRange: $e")
         null
     }
 
