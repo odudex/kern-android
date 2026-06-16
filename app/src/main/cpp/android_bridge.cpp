@@ -30,6 +30,7 @@ extern "C" {
 #include "sim_sdcard.h"
 #include "ui/assets/kern_logo_lvgl.h"
 #include "ui/theme.h"
+#include "ui/theme_widgets.h"
 #include "utils/bip39_filter.h"
 #include "video/video.h"
 #include "wally_core.h"
