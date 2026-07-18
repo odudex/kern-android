@@ -153,6 +153,7 @@ target_include_directories(kern_common INTERFACE
     ${KERN_DIR}/main
     ${KERN_DIR}/components
     ${KERN_DIR}/components/bbqr/src
+    ${KERN_DIR}/components/deflate_codec/src
     ${KERN_DIR}/components/k_quirc/include
     ${KERN_DIR}/components/k_quirc/src
     ${KERN_DIR}/components/cUR/src
@@ -254,7 +255,8 @@ file(GLOB_RECURSE CUR_SOURCES CONFIGURE_DEPENDS ${KERN_DIR}/components/cUR/src/*
 set(KERN_COMPONENT_SOURCES
     ${KERN_DIR}/components/bbqr/src/bbqr.c
     ${KERN_DIR}/components/bbqr/src/base32.c
-    ${KERN_DIR}/components/bbqr/src/miniz.c
+    # Shared zlib adapter used by KEF and BBQr (zlib itself comes from the NDK)
+    ${KERN_DIR}/components/deflate_codec/src/deflate_codec.c
 )
 
 add_library(kern_core STATIC
@@ -263,7 +265,7 @@ add_library(kern_core STATIC
     ${KQUIRC_SOURCES}
     ${CUR_SOURCES}
 )
-target_link_libraries(kern_core PUBLIC kern_common lvgl wally)
+target_link_libraries(kern_core PUBLIC kern_common lvgl wally z)
 
 # ---------------------------------------------------------------------------
 # kern_android: the actual JNI shared library packaged in the APK.

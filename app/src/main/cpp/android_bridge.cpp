@@ -10,21 +10,20 @@
 #include <mutex>
 #include <pthread.h>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 
 extern "C" {
 #include "bsp/pmic.h"
+#include "core/nvs_secure.h"
 #include "core/pin.h"
 #include "core/storage.h"
-#include "utils/session.h"
 #include "core/settings.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
-#include "nvs_flash.h"
-#include "pages/login/login.h"
-#include "pages/pin/pin_page.h"
+#include "pages/session_lock.h"
 #include "sim_flash.h"
 #include "sim_nvs.h"
 #include "sim_sdcard.h"
@@ -71,39 +70,12 @@ void cache_finish_app_binding(JNIEnv *env) {
     }
 }
 
-void post_unlock_cb();
-void session_expired_handler();
-
-void session_expired_handler() {
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_clean(scr);
-    pin_page_create(scr, PIN_PAGE_UNLOCK, post_unlock_cb, nullptr);
-}
-
-void post_unlock_cb() {
-    pin_page_destroy();
-
-    uint16_t timeout = pin_get_session_timeout();
-    if (timeout > 0) {
-        session_start(timeout);
-    }
-
-    lv_obj_t *scr = lv_screen_active();
-    lv_obj_clean(scr);
-    login_page_create(scr);
-}
-
 void splash_done_cb(lv_timer_t *timer) {
     lv_timer_delete(timer);
 
     lv_obj_t *scr = lv_screen_active();
     lv_obj_clean(scr);
-
-    if (pin_is_configured()) {
-        pin_page_create(scr, PIN_PAGE_UNLOCK, post_unlock_cb, nullptr);
-    } else {
-        login_page_create(scr);
-    }
+    session_lock_boot_gate(scr);
 }
 
 void render_loop() {
@@ -136,9 +108,28 @@ bool start_kern(ANativeWindow *window, int width, int height,
     std::string base_dir = files_dir ? files_dir : "/data/data/com.odudex.kern/files";
     std::string nvs_dir = base_dir + "/nvs";
     std::string flash_dir = base_dir + "/spiffs";
+    // The mock SD card gets its own subdir (mirroring main_sim.c's layout)
+    // so the file browser doesn't expose the nvs/ and spiffs/ backing stores
+    // that live alongside it in the app files dir.
+    std::string sdcard_dir = base_dir + "/sdcard";
     sim_nvs_set_data_dir(nvs_dir.c_str());
     sim_flash_set_data_dir(flash_dir.c_str());
-    sim_sdcard_set_data_dir(base_dir.c_str());
+    sim_sdcard_set_data_dir(sdcard_dir.c_str());
+
+    // Older builds mounted the mock SD card at base_dir itself; user files
+    // (mnemonics, descriptors) were saved under <base>/kern. Move that tree
+    // under the new root once so existing data stays visible.
+    std::string old_kern = base_dir + "/kern";
+    std::string new_kern = sdcard_dir + "/kern";
+    struct stat st {};
+    if (stat(old_kern.c_str(), &st) == 0 && S_ISDIR(st.st_mode) &&
+        stat(new_kern.c_str(), &st) != 0) {
+        mkdir(sdcard_dir.c_str(), 0755);
+        if (rename(old_kern.c_str(), new_kern.c_str()) != 0) {
+            __android_log_print(ANDROID_LOG_WARN, LOG_TAG,
+                                "SD-card migration failed for %s", old_kern.c_str());
+        }
+    }
 
     if (wally_init(0) != WALLY_OK) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "wally_init failed");
@@ -164,13 +155,9 @@ bool start_kern(ANativeWindow *window, int width, int height,
     theme_apply_screen(scr);
     lv_refr_now(nullptr);
 
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        nvs_flash_erase();
-        ret = nvs_flash_init();
-    }
+    esp_err_t ret = nvs_secure_init();
     if (ret != ESP_OK) {
-        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "nvs_flash_init failed: 0x%x", ret);
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "nvs_secure_init failed: 0x%x", ret);
         return false;
     }
 
@@ -193,7 +180,7 @@ bool start_kern(ANativeWindow *window, int width, int height,
     kern_logo_animated(scr);
     bip39_filter_init();
     pin_init();
-    session_set_expired_callback(session_expired_handler);
+    session_lock_init();
 
     lv_timer_t *splash_timer = lv_timer_create(splash_done_cb, 3000, nullptr);
     lv_timer_set_repeat_count(splash_timer, 1);
