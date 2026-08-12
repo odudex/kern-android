@@ -2,10 +2,11 @@
 
 Android simulator shell for the Kern LVGL UI.
 
-> **For learning only.** This app exists to explore Kern and air-gapped
-> Bitcoin transactions. Phones can't fully isolate keys from the OS,
-> libraries, or peripherals — do not use it for wallets holding real
-> funds or important mnemonics. Use a dedicated device for that.
+> **Research and development only.** Kern is a research and development
+> project, not a product. This repository is a simulator shell for exploring
+> Kern and air-gapped Bitcoin transactions on a phone. A phone cannot fully
+> isolate keys from the OS, libraries, or peripherals, so do not use it for
+> wallets holding real funds or important mnemonics.
 
 ## What is included
 
@@ -96,8 +97,10 @@ adb shell am start -n com.odudex.kern/.MainActivity
   rear camera via Camera2; the simulator's mock camera shims are only
   used as a fallback when no camera is available (e.g. emulator without
   a virtual webcam).
-- An educational-use warning dialog is shown on every launch; the app
-  surface is only initialised once the user acknowledges it.
+- A research-and-development notice is shown on every launch; the Kern
+  surface is only initialised once it is acknowledged. Kern shows its own
+  R&D disclaimer as well, once per version, so the first run of a newly
+  built version shows both.
 - The About page shows a version of the form `<kern>-sim-dev`, where
   `<kern>` is read at configure time from `third_party/Kern/version.txt`.
 - Kern and LVGL sources are not modified; Android-specific glue lives under `app/src/main/cpp`.
