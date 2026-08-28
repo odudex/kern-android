@@ -252,6 +252,12 @@ list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/main\\.c$")
 list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/test/.*")
 list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/core/storage\\.c$")
 list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/core/fw_update\\.c$")
+# core/pbkdf2.c drives the ESP32-P4 SHA accelerator (hal/, sha/ headers) and
+# core/pbkdf2_selftest.c only exercises it. SIMULATOR routes
+# crypto_pbkdf2_sha256() through mbedtls_pkcs5 instead, so neither is reachable
+# here. The simulator's own build leaves both out for the same reason.
+list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/core/pbkdf2\\.c$")
+list(FILTER KERN_MAIN_SOURCES EXCLUDE REGEX ".*/core/pbkdf2_selftest\\.c$")
 
 file(GLOB KQUIRC_SOURCES CONFIGURE_DEPENDS ${KERN_DIR}/components/k_quirc/src/*.c)
 file(GLOB_RECURSE CUR_SOURCES CONFIGURE_DEPENDS ${KERN_DIR}/components/cUR/src/*.c)

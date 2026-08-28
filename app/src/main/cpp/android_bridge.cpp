@@ -16,6 +16,7 @@
 
 extern "C" {
 #include "bsp/pmic.h"
+#include "core/entropy_pool.h"
 #include "core/nvs_secure.h"
 #include "core/pin.h"
 #include "core/storage.h"
@@ -28,6 +29,7 @@ extern "C" {
 #include "sim_nvs.h"
 #include "sim_sdcard.h"
 #include "ui/assets/kern_logo_lvgl.h"
+#include "ui/entropy_input.h"
 #include "ui/theme.h"
 #include "ui/theme_widgets.h"
 #include "utils/bip39_filter.h"
@@ -131,6 +133,9 @@ bool start_kern(ANativeWindow *window, int width, int height,
         }
     }
 
+    // Seed before anything can ask for randomness (mirrors app_main)
+    entropy_pool_init();
+
     if (wally_init(0) != WALLY_OK) {
         __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "wally_init failed");
         return false;
@@ -150,6 +155,10 @@ bool start_kern(ANativeWindow *window, int width, int height,
     (void)display;
     (void)indev;
 
+    // Feed touch events into the entropy pool. The render loop is not running
+    // yet, so no LVGL lock is needed here.
+    entropy_input_attach();
+
     theme_init();
     lv_obj_t *scr = lv_screen_active();
     theme_apply_screen(scr);
@@ -168,7 +177,14 @@ bool start_kern(ANativeWindow *window, int width, int height,
         return false;
     }
 
-    settings_init();
+    // Not fatal: every getter falls back to its default when the namespace is
+    // unavailable, and those defaults are the safe ones.
+    esp_err_t settings_ret = settings_init();
+    if (settings_ret != ESP_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG,
+                            "settings_init failed, using defaults: 0x%x", settings_ret);
+    }
+
     bsp_pmic_init();
 
     esp_err_t video_ret = app_video_init_once(nullptr);
@@ -178,8 +194,18 @@ bool start_kern(ANativeWindow *window, int width, int height,
     }
 
     kern_logo_animated(scr);
-    bip39_filter_init();
-    pin_init();
+    if (!bip39_filter_init()) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "bip39_filter_init failed");
+    }
+
+    // Fail closed: without it pin_is_configured() reports false and the boot
+    // gate would walk straight past the PIN of a device that has one set.
+    esp_err_t pin_ret = pin_init();
+    if (pin_ret != ESP_OK) {
+        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "pin_init failed: 0x%x", pin_ret);
+        return false;
+    }
+
     session_lock_init();
 
     lv_timer_t *splash_timer = lv_timer_create(splash_done_cb, 3000, nullptr);
